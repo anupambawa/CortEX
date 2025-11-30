@@ -5,6 +5,10 @@
 **CortEX** is a cutting-edge, real-time web application designed to empower users through neurofeedback during meditation. Built using **Next.js** and **TypeScript**, the platform integrates **EEG** and **ECG** biopotential signals via **Bluetooth Low Energy (BLE)** to deliver a personalized, data-driven meditation experience.
 
 Adding new indicators
+1. Focus
+2. Stress
+3. Fatiuge
+
 ---
 
 ## 🔌 Hardware Requirement
