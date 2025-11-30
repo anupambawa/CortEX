@@ -1,4 +1,4 @@
-// app/SignalVisualizer.tsx
+// src/components/Dataplotting.tsx
 "use client";
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useMotionValue } from "framer-motion";
@@ -22,6 +22,21 @@ import { predictState } from "@/lib/stateClassifier";
 import { MeditationSession } from '../components/MeditationSession';
 import QuoteCard from './QuoteCard';
 import Link from "next/link";
+import {
+    ModeEngine,
+    defaultBaselines,
+    FeaturesSnapshot,
+    SummaryMetrics,
+    ModeSuggestion,
+} from "@/lib/modeEngine";
+import {
+    ModeSuggestionCard,
+    ModeHistoryEntry,
+} from "@/components/ModeSuggestionCard";
+import { SessionTimeline } from "@/components/SessionTimeline";
+import FocusGauge from "./FocusGauge";
+import MiniGauge from "./MiniGauge";
+
 
 const CHANNEL_COLORS: Record<string, string> = {
     ch0: "#C29963", // EEG channel 0
@@ -68,8 +83,8 @@ export default function SignalVisualizer() {
         statePercentages: Record<string, string>;
         goodMeditationPct: string;
         weightedEEGScore: number;
-        averageHRV: number;  
-        averageBPM: number;   
+        averageHRV: number;
+        averageBPM: number;
     } | null>(null);
     // 1) Create refs for each display element
     const currentRef = useRef<HTMLDivElement>(null);
@@ -94,6 +109,59 @@ export default function SignalVisualizer() {
     const lastHRVRef = useRef<number | null>(null);
 
     const selectedGoalRef = useRef(selectedGoal);
+
+    // --- NeuroFocus metrics & mode engine ---
+    const modeEngineRef = useRef<ModeEngine | null>(null);
+    const [baselines, setBaselines] = useState(defaultBaselines);
+    const [summaryMetrics, setSummaryMetrics] = useState<SummaryMetrics | null>(null);
+    const [modeSuggestion, setModeSuggestion] = useState<ModeSuggestion | null>(null);
+    const [modeHistory, setModeHistory] = useState<ModeHistoryEntry[]>([]);
+    const [lastUpdateTs, setLastUpdateTs] = useState<number | null>(null);
+
+    const pushNeuroFeatures = useCallback((
+        smooth0: Record<string, number>,
+        smooth1: Record<string, number>
+    ) => {
+        // Save last bands for calibration use
+        lastBandsRef.current = { left: smooth0, right: smooth1 };
+
+        const snapshot: FeaturesSnapshot = {
+            ts: Date.now(),
+            left: {
+                alpha: smooth0.alpha ?? 0,
+                beta: smooth0.beta ?? 0,
+                theta: smooth0.theta ?? 0,
+                delta: smooth0.delta ?? 0,
+                gamma: smooth0.gamma ?? 0,
+            },
+            right: {
+                alpha: smooth1.alpha ?? 0,
+                beta: smooth1.beta ?? 0,
+                theta: smooth1.theta ?? 0,
+                delta: smooth1.delta ?? 0,
+                gamma: smooth1.gamma ?? 0,
+            },
+            // TODO: wire real blink/eye/EMG/SQI here from workers
+            blinkRate: 10,   // placeholder baseline-ish values
+            eyeDrift: 0,
+            emgRMS: 0.04,
+            sqi: 0.9,
+        };
+
+        if (!modeEngineRef.current) return;
+        const { summary, suggestion } = modeEngineRef.current.pushSnapshot(
+            snapshot,
+            6 // last 6 windows ~ last 6s
+        );
+        setSummaryMetrics(summary);
+        setModeSuggestion(suggestion);
+        setLastUpdateTs(snapshot.ts);
+    }, []);
+
+    const lastBandsRef = useRef<{
+        left: Record<string, number>;
+        right: Record<string, number>;
+    } | null>(null);
 
     useEffect(() => {
         selectedGoalRef.current = selectedGoal;
@@ -220,6 +288,7 @@ export default function SignalVisualizer() {
             }
 
             setCalmScore(score);
+            pushNeuroFeatures(smooth0, smooth1);
         };
 
         workerRef.current = w;
@@ -227,8 +296,112 @@ export default function SignalVisualizer() {
         return () => {
             w.terminate();
         };
-    }, []);
+    }, [pushNeuroFeatures]);
 
+
+    // useEffect(() => {
+    //     const w = new Worker(
+    //         new URL("../webworker/bandPower.worker.ts", import.meta.url),
+    //         { type: "module" }
+    //     );
+
+    //     w.onmessage = (
+    //         e: MessageEvent<{
+    //             smooth0: Record<string, number>;
+    //             smooth1: Record<string, number>;
+    //         }>
+    //     ) => {
+    //         const { smooth0, smooth1 } = e.data;
+
+    //         // Radar data
+    //         leftMV.set(smooth0.beta);
+    //         rightMV.set(smooth1.beta);
+
+    //         function capitalize(subject: string): string {
+    //             return subject.charAt(0).toUpperCase() + subject.slice(1);
+    //         }
+
+    //         radarDataCh0Ref.current = Object.entries(smooth0).map(
+    //             ([subject, value]) => ({ subject: capitalize(subject), value })
+    //         );
+
+    //         radarDataCh1Ref.current = Object.entries(smooth1).map(
+    //             ([subject, value]) => ({ subject: capitalize(subject), value })
+    //         );
+
+    //         let score = 0;
+    //         const goal = selectedGoalRef.current;
+
+    //         if (goal === "anxiety") {
+    //             score = (Number(smooth0.alpha) + Number(smooth1.alpha)) / (Number(smooth0.beta) + Number(smooth1.beta) + 0.001);
+    //         } else if (goal === "meditation") {
+    //             score = (smooth0.theta + smooth1.theta) / 2;
+    //         } else if (goal === "sleep") {
+    //             score = (smooth0.delta + smooth1.delta) / 2;
+    //         }
+
+    //         const currentData = {
+    //             timestamp: Date.now(),
+    //             alpha: (smooth0.alpha + smooth1.alpha) / 2,
+    //             beta: (smooth0.beta + smooth1.beta) / 2,
+    //             theta: (smooth0.theta + smooth1.theta) / 2,
+    //             delta: (smooth0.delta + smooth1.delta) / 2,
+    //             symmetry: Math.abs(smooth0.alpha - smooth1.alpha),
+    //             bpm: lastBPMRef.current ?? null,
+    //             hrv: lastHRVRef.current ?? null,
+    //         };
+
+    //         // ✅ Only record data if meditating
+    //         if (isMeditatingRef.current) {
+    //             sessionDataRef.current.push(currentData);
+    //         }
+
+    //         setCalmScore(score);
+    //     };
+
+    //     workerRef.current = w;
+
+    //     return () => {
+    //         w.terminate();
+    //     };
+    // }, []);
+
+
+    const handleCalibrate = () => {
+        if (!lastBandsRef.current) return;
+
+        const { left, right } = lastBandsRef.current;
+        const alphaAvg =
+            ((left.alpha ?? 0) + (right.alpha ?? 0)) / 2 || 1e-6;
+        const betaAvg =
+            ((left.beta ?? 0) + (right.beta ?? 0)) / 2 || 1e-6;
+        const thetaAvg =
+            ((left.theta ?? 0) + (right.theta ?? 0)) / 2 || 1e-6;
+
+        const BA = betaAvg / alphaAvg;
+
+        // Approx relative bands from left side
+        const total =
+            (left.alpha ?? 0) +
+            (left.beta ?? 0) +
+            (left.theta ?? 0) +
+            (left.delta ?? 0) +
+            (left.gamma ?? 0) +
+            1e-6;
+
+        const newBaselines = {
+            BA,
+            theta: thetaAvg,
+            betaRel: (left.beta ?? 0) / total,
+            thetaRel: (left.theta ?? 0) / total,
+            alphaRel: (left.alpha ?? 0) / total,
+            blinkRate: 12,
+            emgRMS: 0.05,
+        };
+
+        setBaselines(newBaselines);
+        modeEngineRef.current?.updateBaselines(newBaselines);
+    };
 
     const onNewSample = useCallback((eeg0: number, eeg1: number) => {
         buf0Ref.current.push(eeg0);
@@ -452,29 +625,88 @@ export default function SignalVisualizer() {
     return (
         <div className={`flex flex-col h-screen w-full overflow-hidden text-sm sm:text-base md:text-lg lg:text-xl ${bgGradient} transition-colors duration-300`}>
             {/* Header - Fixed height */}
-            <header className={`${darkMode
-                ? 'bg-zinc-900/90 backdrop-blur-sm border-b border-amber-900/20'
-                : 'bg-white/90 backdrop-blur-sm border-b border-amber-100'} 
-                h-8 sm:h-9 md:h-10 lg:h-11 transition-colors duration-300 z-10 flex-shrink-0`}>
-                <div className="w-full h-full flex justify-between items-center" style={{ paddingLeft: '1.25rem', paddingRight: '1.25rem' }}>
+            <header
+                className={`${darkMode
+                    ? "bg-zinc-900/90 backdrop-blur-sm border-b border-amber-900/20"
+                    : "bg-white/90 backdrop-blur-sm border-b border-amber-100"
+                    } 
+                h-8 sm:h-9 md:h-10 lg:h-11 transition-colors duration-300 z-10 flex-shrink-0`}
+            >
+                <div
+                    className="w-full h-full flex justify-between items-center"
+                    style={{ paddingLeft: "1.25rem", paddingRight: "1.25rem" }}
+                >
+                    {/* Left: app title + "child name" */}
                     <div className="flex items-center space-x-3">
-                        <Activity className={`${primaryAccent} w-4 h-4 sm:w-5 sm:h-5 md:w-6 md:h-6 lg:w-7 lg:h-7`} />
-                        <h1 className="text-sm sm:text-base md:text-lg lg:text-xl xl:text-2xl font-light tracking-tight">
-                            <span className={`font-bold ${textPrimary}`}>Cort</span>
-                            <span className={`${primaryAccent} font-bold ml-1`}>EX</span>
-                        </h1>
+                        <Activity
+                            className={`${primaryAccent} w-4 h-4 sm:w-5 sm:h-5 md:w-6 md:h-6 lg:w-7 lg:h-7`}
+                        />
+                        <div className="flex flex-col leading-tight">
+                            <h1 className="text-sm sm:text-base md:text-lg lg:text-xl xl:text-2xl font-light tracking-tight">
+                                <span className={`font-bold ${textPrimary}`}>Cort</span>
+                                <span className={`${primaryAccent} font-bold ml-1`}>EX</span>
+                                <span className="ml-1 text-xs sm:text-sm font-normal text-zinc-400">
+                                    &mdash; NeuroFocus
+                                </span>
+                            </h1>
+                            <span className="text-[0.65rem] sm:text-xs text-zinc-400">
+                                Child: <span className="font-medium text-zinc-300">Aarav</span>
+                            </span>
+                        </div>
                     </div>
-                    <div className="flex items-center" style={{ gap: '1.25rem' }}>
+
+                    {/* Middle: device state + last update */}
+                    <div className="hidden sm:flex items-center gap-3 text-[0.7rem]">
+                        <div className="flex items-center gap-1">
+                            <span
+                                className={`w-2 h-2 rounded-full ${connected
+                                    ? "bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.8)]"
+                                    : "bg-rose-400 shadow-[0_0_8px_rgba(248,113,113,0.8)]"
+                                    }`}
+                            />
+                            <span className={textSecondary}>
+                                {connected ? "Connected" : "Disconnected"}
+                            </span>
+                        </div>
+                        <div className={textSecondary}>
+                            Last update:&nbsp;
+                            {lastUpdateTs
+                                ? new Date(lastUpdateTs).toLocaleTimeString([], {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                    second: "2-digit",
+                                })
+                                : "—"}
+                        </div>
+                    </div>
+
+                    {/* Right: calibrate + dark mode + contributors */}
+                    <div className="flex items-center" style={{ gap: "0.75rem" }}>
+                        <button
+                            onClick={handleCalibrate}
+                            className={`hidden sm:inline-flex items-center px-3 py-1.5 rounded-lg text-[0.7rem] font-semibold cursor-pointer
+          ${darkMode
+                                    ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                                    : "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                                }`}
+                        >
+                            Calibrate
+                        </button>
+
                         <button
                             onClick={() => setDarkMode(!darkMode)}
                             className={`p-1.5 sm:p-2 md:p-2.5 rounded-xl transition-all duration-300 
-                                ${darkMode ? ' text-zinc-200' : ' text-stone-700'} 
+                                ${darkMode ? " text-zinc-200" : " text-stone-700"} 
                                 transform hover:scale-105 flex items-center justify-center cursor-pointer`}
                         >
-                            {darkMode ?
-                                <Sun className="w-3 h-3 sm:w-4 sm:h-4 md:w-5 md:h-5" strokeWidth={2} /> :
-                                <Moon className="w-3 h-3 sm:w-4 sm:h-4 md:w-5 md:h-5" strokeWidth={2} />
-                            }
+                            {darkMode ? (
+                                <Sun className="w-3 h-3 sm:w-4 sm:h-4 md:w-5 md:h-5" strokeWidth={2} />
+                            ) : (
+                                <Moon
+                                    className="w-3 h-3 sm:w-4 sm:h-4 md:w-5 md:h-5"
+                                    strokeWidth={2}
+                                />
+                            )}
                         </button>
                         <div className="flex items-center cursor-pointer">
                             <Contributors darkMode={darkMode} />
@@ -794,8 +1026,9 @@ export default function SignalVisualizer() {
                         </div>
 
                         {/* EEG Row 2: Radar Charts */}
-                        <div className={`rounded-xl p-2 sm:p-3 md:p-4 border ${cardBg} transition-all duration-300 h-2/5 min-h-0 overflow-hidden backdrop-blur-sm flex flex-col`}>
-
+                        <div
+                            className={`rounded-xl p-2 sm:p-3 md:p-4 border ${cardBg} transition-all duration-300 h-2/5 min-h-0 overflow-hidden backdrop-blur-sm flex flex-col`}
+                        >
                             {/* Content Area */}
                             <div className="flex-1 min-h-0 overflow-hidden">
                                 <div className="flex flex-row h-full gap-2 p-1 sm:p-2">
@@ -889,6 +1122,30 @@ export default function SignalVisualizer() {
                                             </div>
                                         </div>
                                     </div>
+                                </div>
+                            </div>
+
+                            {/* Focus / Stress / Fatigue / Engagement row */}
+                            <div className="mt-1 pt-1 border-t border-zinc-700/30 flex flex-col sm:flex-row gap-2 items-center">
+                                <div className="flex-1 flex justify-center">
+                                    <FocusGauge value={summaryMetrics?.focusScore ?? 0} />
+                                </div>
+                                <div className="flex-1 grid grid-cols-3 gap-1">
+                                    <MiniGauge
+                                        label="Stress"
+                                        value={summaryMetrics?.stress ?? 0}
+                                        darkMode={darkMode}
+                                    />
+                                    <MiniGauge
+                                        label="Fatigue"
+                                        value={summaryMetrics?.fatigue ?? 0}
+                                        darkMode={darkMode}
+                                    />
+                                    <MiniGauge
+                                        label="Engage"
+                                        value={summaryMetrics?.engagement ?? 0}
+                                        darkMode={darkMode}
+                                    />
                                 </div>
                             </div>
                         </div>
@@ -1097,6 +1354,48 @@ export default function SignalVisualizer() {
                                         </div>
                                     </div>
                                 </div>
+
+
+                            </div>
+
+
+                            {/* Mode Suggestion Card */}
+                            <div className="mt-auto pb-1">
+                                <ModeSuggestionCard
+                                    suggestion={modeSuggestion}
+                                    summary={
+                                        summaryMetrics && {
+                                            focus: summaryMetrics.focusScore,
+                                            stress: summaryMetrics.stress,
+                                            fatigue: summaryMetrics.fatigue,
+                                            engagement: summaryMetrics.engagement,
+                                        }
+                                    }
+                                    darkMode={darkMode}
+                                    onStart={(mode) => {
+                                        if (!summaryMetrics) return;
+                                        const entry: ModeHistoryEntry = {
+                                            id: `${Date.now()}-${mode}`,
+                                            mode,
+                                            startedAt: Date.now(),
+                                            beforeSummary: {
+                                                focus: summaryMetrics.focusScore,
+                                                stress: summaryMetrics.stress,
+                                                fatigue: summaryMetrics.fatigue,
+                                                engagement: summaryMetrics.engagement,
+                                            },
+                                        };
+                                        setModeHistory((prev) => {
+                                            const next = [entry, ...prev];
+                                            return next.slice(0, 3); // last 3 runs
+                                        });
+                                    }}
+                                    onSnooze={() => {
+                                        // You can implement a cooldown here; for now just clear suggestion
+                                        setModeSuggestion(null);
+                                    }}
+                                    onIgnore={() => setModeSuggestion(null)}
+                                />
                             </div>
                         </div>
 
@@ -1111,6 +1410,35 @@ export default function SignalVisualizer() {
                         </div>
                     </div>
                 </div>
+
+
+                  {/* Bottom: Session timeline + JSON export */}
+  <div className="w-full px-2 sm:px-4 md:px-6 pb-2 pt-1">
+    <SessionTimeline
+      history={modeHistory}
+      darkMode={darkMode}
+      onDownloadJSON={() => {
+        const payload = {
+          ts: Date.now(),
+          device: "NeuroHeadband-01",
+          history: modeHistory,
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `neurofocus-session-${new Date()
+          .toISOString()
+          .slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }}
+    />
+  </div>
             </main>
 
             {/* Footer - Fixed height */}

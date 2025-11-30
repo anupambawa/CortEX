@@ -1,3 +1,4 @@
+// src/components/DurationSelector.tsx
 import React from 'react';
 
 interface DurationSelectorProps {

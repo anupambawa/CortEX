@@ -1,3 +1,4 @@
+// src/components/QuoteCard.jsx
 'use client'
 import React, { useRef, useEffect, useState } from 'react';
 import { Award } from 'lucide-react';

@@ -1,5 +1,5 @@
+// src/components/StateIndicator.tsx
 "use client";
-// components/StateIndicator.tsx
 import React from "react";
  
 const icons = {

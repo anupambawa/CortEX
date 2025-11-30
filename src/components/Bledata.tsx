@@ -1,3 +1,4 @@
+// src/components/Bledata.tsx
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';

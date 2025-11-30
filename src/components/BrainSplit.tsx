@@ -1,3 +1,4 @@
+// src/components/BrainSplit.tsx
 'use client';
 import React from 'react';
 import { motion, useSpring, useTransform, MotionValue } from 'framer-motion';

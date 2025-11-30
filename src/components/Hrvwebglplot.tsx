@@ -1,3 +1,4 @@
+// src/components/Hrvwebglplot.tsx
 'use client';
 import React, { useEffect, useRef, useImperativeHandle, forwardRef, useCallback } from 'react';
 import { WebglPlot, WebglLine, ColorRGBA } from 'webgl-plot';

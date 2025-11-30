@@ -1,4 +1,4 @@
-// components/MeditationSession.tsx
+// src/components/MeditationSession.tsx
 "use client";
 
 import { useState, useRef, useEffect } from 'react';
