@@ -36,6 +36,7 @@ import {
 import { SessionTimeline } from "@/components/SessionTimeline";
 import FocusGauge from "./FocusGauge";
 import MiniGauge from "./MiniGauge";
+import BrainInsightCard from "./BrainInsightCard";
 
 
 const CHANNEL_COLORS: Record<string, string> = {
@@ -118,49 +119,210 @@ export default function SignalVisualizer() {
     const [modeHistory, setModeHistory] = useState<ModeHistoryEntry[]>([]);
     const [lastUpdateTs, setLastUpdateTs] = useState<number | null>(null);
 
-    const pushNeuroFeatures = useCallback((
-        smooth0: Record<string, number>,
-        smooth1: Record<string, number>
-    ) => {
-        // Save last bands for calibration use
-        lastBandsRef.current = { left: smooth0, right: smooth1 };
 
-        const snapshot: FeaturesSnapshot = {
-            ts: Date.now(),
-            left: {
-                alpha: smooth0.alpha ?? 0,
-                beta: smooth0.beta ?? 0,
-                theta: smooth0.theta ?? 0,
-                delta: smooth0.delta ?? 0,
-                gamma: smooth0.gamma ?? 0,
-            },
-            right: {
-                alpha: smooth1.alpha ?? 0,
-                beta: smooth1.beta ?? 0,
-                theta: smooth1.theta ?? 0,
-                delta: smooth1.delta ?? 0,
-                gamma: smooth1.gamma ?? 0,
-            },
-            // TODO: wire real blink/eye/EMG/SQI here from workers
-            blinkRate: 10,   // placeholder baseline-ish values
-            eyeDrift: 0,
-            emgRMS: 0.04,
-            sqi: 0.9,
-        };
+    const [focusScore, setFocusScore] = useState(0);
+    const [stressLevel, setStressLevel] = useState(0);
+    const [fatigueLevel, setFatigueLevel] = useState(0);
+    const [engagementLevel, setEngagementLevel] = useState(0);
 
-        if (!modeEngineRef.current) return;
-        const { summary, suggestion } = modeEngineRef.current.pushSnapshot(
-            snapshot,
-            6 // last 6 windows ~ last 6s
+
+
+    // Map raw ratios → 0-100 with smoothing
+    function smoothToPercent(
+        raw: number,
+        min: number,
+        max: number,
+        prevPercent: number
+    ): number {
+        if (!isFinite(raw)) return prevPercent || 0;
+
+        // normalize to 0..1
+        const norm = (raw - min) / (max - min);
+        const bounded = Math.max(0, Math.min(1, norm));
+
+        // previous is 0-100, convert back to 0-1 for smoothing
+        const prevNorm = prevPercent / 100;
+        const smoothed =
+            prevPercent === 0 ? bounded : prevNorm * 0.7 + bounded * 0.3;
+
+        return Math.round(smoothed * 100);
+    }
+
+
+    const pushNeuroFeatures = useCallback(
+        (smooth0: Record<string, number>, smooth1: Record<string, number>) => {
+
+
+
+
+            lastBandsRef.current = { left: smooth0, right: smooth1 };
+
+            // Averages
+            const alpha = ((smooth0.alpha ?? 0) + (smooth1.alpha ?? 0)) / 2;
+            const beta = ((smooth0.beta ?? 0) + (smooth1.beta ?? 0)) / 2;
+            const theta = ((smooth0.theta ?? 0) + (smooth1.theta ?? 0)) / 2;
+            const delta = ((smooth0.delta ?? 0) + (smooth1.delta ?? 0)) / 2;
+            const gamma = ((smooth0.gamma ?? 0) + (smooth1.gamma ?? 0)) / 2;
+
+            // Using your calibration baselines (default or updated)
+            const BL = baselines;
+
+            const blinkRate = 10;   // TODO: wire real values
+            const emgRMS = 0.04; // TODO
+            const eyeDrift = 0.0;  // TODO
+
+            // --- NORMALIZED VALUES ---
+            const nAlpha = norm(alpha, BL.alphaRel || alpha);
+            const nBeta = norm(beta, BL.betaRel || beta);
+            const nTheta = norm(theta, BL.thetaRel || theta);
+            const nDelta = norm(delta, BL.deltaRel || delta);
+            const nGamma = norm(gamma, BL.gammaRel || gamma);
+
+            const nBlink = norm(blinkRate, BL.blinkRate || 12);
+            const nEMG = norm(emgRMS, BL.emgRMS || 0.05);
+            const nDrift = norm(eyeDrift, 0.1);
+
+            // ============================================================
+            // 🧠 1. FOCUS SCORE (spec)
+            // ============================================================
+            const BAR = beta / (alpha + 0.0001);
+
+            const FocusScore =
+                100 * Math.min(
+                    1,
+                    Math.max(
+                        0,
+                        0.6 * norm(BAR, BL.BA) +
+                        0.4 * (1 - nTheta)
+                    )
+                );
+
+
+            // ============================================================
+            // 😣 2. STRESS SCORE (spec)
+            // ============================================================
+            const StressScore = 100 * Math.min(
+                1,
+                Math.max(
+                    0,
+                    0.40 * nBeta +
+                    0.20 * nGamma +
+                    0.25 * nEMG +
+                    0.15 * nBlink
+                )
+            );
+
+            // ============================================================
+            // ⚡ 3. ENGAGEMENT SCORE (spec)
+            // ============================================================
+            const EngagementScore = 100 * Math.min(
+                1,
+                Math.max(
+                    0,
+                    0.45 * nBeta +
+                    0.25 * nGamma +
+                    0.15 * (1 - nAlpha) +
+                    0.15 * (1 - nTheta)
+                )
+            );
+
+            // ============================================================
+            // 💤 4. FATIGUE SCORE (spec)
+            // ============================================================
+            const FatigueScore = 100 * Math.min(
+                1,
+                Math.max(
+                    0,
+                    0.50 * ((nDelta + nTheta) / 2) +
+                    0.25 * (1 - nAlpha) +
+                    0.15 * nBlink +
+                    0.10 * nDrift
+                )
+            );
+
+            // ---- Update UI ----
+            // ---- Update UI with integers ----
+            setFocusScore(
+                Math.min(100, Math.max(0, Math.round(FocusScore)))
+            );
+
+            setStressLevel(
+                Math.min(100, Math.max(0, Math.round(StressScore)))
+            );
+
+            setFatigueLevel(
+                Math.min(100, Math.max(0, Math.round(FatigueScore)))
+            );
+
+            setEngagementLevel(
+                Math.min(100, Math.max(0, Math.round(EngagementScore)))
+            );
+
+
+            // Mode Engine (unchanged)
+            if (!modeEngineRef.current) return;
+            const snapshot: FeaturesSnapshot = {
+                ts: Date.now(),
+                left: smooth0,
+                right: smooth1,
+                blinkRate,
+                eyeDrift,
+                emgRMS,
+                sqi: 0.9,
+            };
+
+            const { summary, suggestion } = modeEngineRef.current.pushSnapshot(snapshot, 6);
+            setSummaryMetrics(summary);
+            setModeSuggestion(suggestion);
+            setLastUpdateTs(snapshot.ts);
+
+
+            console.log("---- pushNeuroFeatures ----");
+
+            console.log("smooth0:", smooth0);
+            console.log("smooth1:", smooth1);
+
+            console.log("raw alpha:", alpha);
+            console.log("raw beta:", beta);
+            console.log("raw theta:", theta);
+
+            console.log("BASELINES:", baselines);
+
+            console.log("BAR:", BAR);
+
+            console.log("norm(BAR, BL.BA):", norm(BAR, BL.BA));
+            console.log("nTheta:", nTheta);
+
+            console.log("FocusScore (before clamp):",
+                0.6 * norm(BAR, BL.BA) +
+                0.4 * (1 - nTheta)
+            );
+
+        },
+        [baselines]
+    );
+
+
+    function norm(x: number, baseline: number) {
+        if (!baseline || baseline < 1e-6) baseline = 1e-6;
+
+        const ratio = x / baseline;
+
+        console.log(
+            "norm() => x:", x,
+            "baseline:", baseline,
+            "ratio:", ratio
         );
-        setSummaryMetrics(summary);
-        setModeSuggestion(suggestion);
-        setLastUpdateTs(snapshot.ts);
-    }, []);
+
+        return Math.min(1, Math.max(0, (ratio - 0.5) / 0.5));
+    }
+
+
+
 
     const lastBandsRef = useRef<{
         left: Record<string, number>;
-        right: Record<string, number>;
+        right: Record<string, number>; ndle
     } | null>(null);
 
     useEffect(() => {
@@ -229,7 +391,6 @@ export default function SignalVisualizer() {
         dataProcessorWorkerRef.current = worker;
         return () => worker.terminate();
     }, []);
-
     useEffect(() => {
         const w = new Worker(
             new URL("../webworker/bandPower.worker.ts", import.meta.url),
@@ -282,12 +443,33 @@ export default function SignalVisualizer() {
                 hrv: lastHRVRef.current ?? null,
             };
 
-            // ✅ Only record data if meditating
-            if (isMeditatingRef.current) {
-                sessionDataRef.current.push(currentData);
-            }
+            // ---------- NEW: EEG indicator ratios ----------
+            const EPS = 1e-6;
 
-            setCalmScore(score);
+            const alpha = currentData.alpha || EPS;
+            const beta = currentData.beta || EPS;
+            const theta = currentData.theta || EPS;
+
+            // // industry formulas
+            // const focusRaw = beta / (alpha + theta + EPS); // β / (α + θ)
+            // const stressRaw = beta / (alpha + EPS);         // β / α
+            // const fatigueRaw = theta / (beta + EPS);         // θ / β
+            // const engagementRaw = beta / (alpha + theta + EPS); // same base as focus
+
+            // // map raw ratios → 0–100 + smoothing
+            // setFocusScore(prev =>
+            //     smoothToPercent(focusRaw, 0.3, 3.0, prev)
+            // );
+            // setStressLevel(prev =>
+            //     smoothToPercent(stressRaw, 0.2, 4.0, prev)
+            // );
+            // setFatigueLevel(prev =>
+            //     smoothToPercent(fatigueRaw, 0.1, 2.5, prev)
+            // );
+            // setEngagementLevel(prev =>
+            //     smoothToPercent(engagementRaw, 0.3, 3.0, prev)
+            // );
+            // setCalmScore(score);
             pushNeuroFeatures(smooth0, smooth1);
         };
 
@@ -299,109 +481,47 @@ export default function SignalVisualizer() {
     }, [pushNeuroFeatures]);
 
 
-    // useEffect(() => {
-    //     const w = new Worker(
-    //         new URL("../webworker/bandPower.worker.ts", import.meta.url),
-    //         { type: "module" }
-    //     );
-
-    //     w.onmessage = (
-    //         e: MessageEvent<{
-    //             smooth0: Record<string, number>;
-    //             smooth1: Record<string, number>;
-    //         }>
-    //     ) => {
-    //         const { smooth0, smooth1 } = e.data;
-
-    //         // Radar data
-    //         leftMV.set(smooth0.beta);
-    //         rightMV.set(smooth1.beta);
-
-    //         function capitalize(subject: string): string {
-    //             return subject.charAt(0).toUpperCase() + subject.slice(1);
-    //         }
-
-    //         radarDataCh0Ref.current = Object.entries(smooth0).map(
-    //             ([subject, value]) => ({ subject: capitalize(subject), value })
-    //         );
-
-    //         radarDataCh1Ref.current = Object.entries(smooth1).map(
-    //             ([subject, value]) => ({ subject: capitalize(subject), value })
-    //         );
-
-    //         let score = 0;
-    //         const goal = selectedGoalRef.current;
-
-    //         if (goal === "anxiety") {
-    //             score = (Number(smooth0.alpha) + Number(smooth1.alpha)) / (Number(smooth0.beta) + Number(smooth1.beta) + 0.001);
-    //         } else if (goal === "meditation") {
-    //             score = (smooth0.theta + smooth1.theta) / 2;
-    //         } else if (goal === "sleep") {
-    //             score = (smooth0.delta + smooth1.delta) / 2;
-    //         }
-
-    //         const currentData = {
-    //             timestamp: Date.now(),
-    //             alpha: (smooth0.alpha + smooth1.alpha) / 2,
-    //             beta: (smooth0.beta + smooth1.beta) / 2,
-    //             theta: (smooth0.theta + smooth1.theta) / 2,
-    //             delta: (smooth0.delta + smooth1.delta) / 2,
-    //             symmetry: Math.abs(smooth0.alpha - smooth1.alpha),
-    //             bpm: lastBPMRef.current ?? null,
-    //             hrv: lastHRVRef.current ?? null,
-    //         };
-
-    //         // ✅ Only record data if meditating
-    //         if (isMeditatingRef.current) {
-    //             sessionDataRef.current.push(currentData);
-    //         }
-
-    //         setCalmScore(score);
-    //     };
-
-    //     workerRef.current = w;
-
-    //     return () => {
-    //         w.terminate();
-    //     };
-    // }, []);
-
 
     const handleCalibrate = () => {
         if (!lastBandsRef.current) return;
 
         const { left, right } = lastBandsRef.current;
-        const alphaAvg =
-            ((left.alpha ?? 0) + (right.alpha ?? 0)) / 2 || 1e-6;
-        const betaAvg =
-            ((left.beta ?? 0) + (right.beta ?? 0)) / 2 || 1e-6;
-        const thetaAvg =
-            ((left.theta ?? 0) + (right.theta ?? 0)) / 2 || 1e-6;
 
-        const BA = betaAvg / alphaAvg;
-
-        // Approx relative bands from left side
-        const total =
-            (left.alpha ?? 0) +
-            (left.beta ?? 0) +
-            (left.theta ?? 0) +
-            (left.delta ?? 0) +
-            (left.gamma ?? 0) +
-            1e-6;
-
-        const newBaselines = {
-            BA,
-            theta: thetaAvg,
-            betaRel: (left.beta ?? 0) / total,
-            thetaRel: (left.theta ?? 0) / total,
-            alphaRel: (left.alpha ?? 0) / total,
-            blinkRate: 12,
-            emgRMS: 0.05,
+        // Absolute band averages
+        const avg = {
+            alpha: (left.alpha + right.alpha) / 2,
+            beta: (left.beta + right.beta) / 2,
+            theta: (left.theta + right.theta) / 2,
+            delta: (left.delta + right.delta) / 2,
+            gamma: (left.gamma + right.gamma) / 2
         };
+
+        // Construct baseline — NOT using live REL values
+        const newBaselines: Baselines = {
+            BA: avg.beta / (avg.alpha + 1e-6),
+
+            // Use a LOWER theta baseline so nTheta < 1 most of the time
+            theta: avg.theta * 0.7,
+
+            // FIX: Use fixed reference proportions (not live)
+            alphaRel: 0.30,   // typical relaxed distribution
+            betaRel: 0.20,   // typical low–mid beta load
+            thetaRel: 0.15,   // typical theta load baseline
+
+            blinkRate: 10,
+            emgRMS: 0.04,
+        };
+
+        console.log("CALIBRATED BASELINES =", newBaselines);
 
         setBaselines(newBaselines);
         modeEngineRef.current?.updateBaselines(newBaselines);
     };
+
+
+
+
+
 
     const onNewSample = useCallback((eeg0: number, eeg1: number) => {
         buf0Ref.current.push(eeg0);
@@ -993,12 +1113,15 @@ export default function SignalVisualizer() {
                             <div className="flex-1 flex flex-col overflow-hidden ">
                                 {/* Waveform Visualization - takes remaining space */}
                                 <div className="flex-1  overflow-hidden ">
-                                    {/* Replace your third card with the Quote Card */}
-                                    <QuoteCard
-                                        cardBg={cardBg}
-                                        refreshInterval={9000}
-                                        darkMode={darkMode}
+                                    {/* Empty space, some component can be put here */}
+                                    <BrainInsightCard
+                                        alpha={radarDataCh0Ref.current[2]?.value || 0}
+                                        beta={radarDataCh0Ref.current[3]?.value || 0}
+                                        theta={radarDataCh0Ref.current[1]?.value || 0}
+                                        delta={radarDataCh0Ref.current[0]?.value || 0}
+                                        gamma={radarDataCh0Ref.current[4]?.value || 0}
                                     />
+
                                 </div>
                             </div>
                         </div>
@@ -1128,24 +1251,26 @@ export default function SignalVisualizer() {
                             {/* Focus / Stress / Fatigue / Engagement row */}
                             <div className="mt-1 pt-1 border-t border-zinc-700/30 flex flex-col sm:flex-row gap-2 items-center">
                                 <div className="flex-1 flex justify-center">
-                                    <FocusGauge value={summaryMetrics?.focusScore ?? 0} />
+                                    <FocusGauge value={focusScore} />
+
                                 </div>
                                 <div className="flex-1 grid grid-cols-3 gap-1">
                                     <MiniGauge
                                         label="Stress"
-                                        value={summaryMetrics?.stress ?? 0}
+                                        value={stressLevel}
                                         darkMode={darkMode}
                                     />
                                     <MiniGauge
                                         label="Fatigue"
-                                        value={summaryMetrics?.fatigue ?? 0}
+                                        value={fatigueLevel}
                                         darkMode={darkMode}
                                     />
                                     <MiniGauge
                                         label="Engage"
-                                        value={summaryMetrics?.engagement ?? 0}
+                                        value={engagementLevel}
                                         darkMode={darkMode}
                                     />
+
                                 </div>
                             </div>
                         </div>
@@ -1412,33 +1537,33 @@ export default function SignalVisualizer() {
                 </div>
 
 
-                  {/* Bottom: Session timeline + JSON export */}
-  <div className="w-full px-2 sm:px-4 md:px-6 pb-2 pt-1">
-    <SessionTimeline
-      history={modeHistory}
-      darkMode={darkMode}
-      onDownloadJSON={() => {
-        const payload = {
-          ts: Date.now(),
-          device: "NeuroHeadband-01",
-          history: modeHistory,
-        };
-        const blob = new Blob([JSON.stringify(payload, null, 2)], {
-          type: "application/json",
-        });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `neurofocus-session-${new Date()
-          .toISOString()
-          .slice(0, 10)}.json`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      }}
-    />
-  </div>
+                {/* Bottom: Session timeline + JSON export */}
+                <div className="w-full px-2 sm:px-4 md:px-6 pb-2 pt-1">
+                    <SessionTimeline
+                        history={modeHistory}
+                        darkMode={darkMode}
+                        onDownloadJSON={() => {
+                            const payload = {
+                                ts: Date.now(),
+                                device: "NeuroHeadband-01",
+                                history: modeHistory,
+                            };
+                            const blob = new Blob([JSON.stringify(payload, null, 2)], {
+                                type: "application/json",
+                            });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = `neurofocus-session-${new Date()
+                                .toISOString()
+                                .slice(0, 10)}.json`;
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            URL.revokeObjectURL(url);
+                        }}
+                    />
+                </div>
             </main>
 
             {/* Footer - Fixed height */}
@@ -1447,7 +1572,7 @@ export default function SignalVisualizer() {
                 style={{ paddingLeft: '0.3125rem', paddingRight: '0.3125rem' }}>
                 <div className="w-full h-full flex flex-col sm:flex-row justify-between items-center" style={{ paddingLeft: '1.25rem', paddingRight: '1.25rem' }}>
                     <div className={`${textSecondary} text-xs sm:text-sm md:text-base mb-1 sm:mb-0`}>
-                        <span className="font-medium">CortEX</span> | &copy; {new Date().getFullYear()}{" "}
+                        <span className="font-medium">FocusEx</span> | &copy; {new Date().getFullYear()}{" "}
                         <Link href="https://upsidedownlabs.tech/" target="_blank">
                             Upside Down Labs
                         </Link>

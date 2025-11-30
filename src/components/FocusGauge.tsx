@@ -1,55 +1,55 @@
+// src/components/FocusGauge.tsx
 "use client";
 import React from "react";
 
-export default function MiniGauge({
-  label,
+export default function FocusGauge({
   value,
-  darkMode,
-}: {
-  label: string;
-  value: number;
-  darkMode: boolean;
-}) {
-  
+  label = "Focus",
+}: { value: number; label?: string }) {
   const clamped = Math.max(0, Math.min(100, value));
-  const colorClass =
-    clamped <= 33
-      ? darkMode
-        ? "text-emerald-300 bg-emerald-900/30"
-        : "text-emerald-700 bg-emerald-100"
-      : clamped <= 66
-      ? darkMode
-        ? "text-amber-300 bg-amber-900/30"
-        : "text-amber-700 bg-amber-100"
-      : darkMode
-      ? "text-rose-300 bg-rose-900/30"
-      : "text-rose-700 bg-rose-100";
-
-  const barColor =
-    clamped <= 33
-      ? "#22c55e"
-      : clamped <= 66
-      ? "#eab308"
-      : "#ef4444";
-
+  const circumference = 2 * Math.PI * 42; // r=42
   return (
-    <div
-      className={`rounded-xl px-3 py-2 text-xs flex flex-col gap-1 ${colorClass}`}
-    >
-      <div className="flex justify-between items-center">
-        <span className="font-semibold">{label}</span>
-        <span className="font-mono text-sm">{clamped}</span>
-      </div>
-      <div className="h-1.5 rounded-full bg-slate-700/30 overflow-hidden">
-        <div
-          className="h-full rounded-full"
-          style={{
-            width: `${clamped}%`,
-            backgroundColor: barColor,
-            transition: "width 0.3s ease",
-          }}
+    <div className="flex flex-col items-center justify-center">
+      <svg viewBox="0 0 100 100" className="w-24 h-24">
+        <circle
+          cx="50"
+          cy="50"
+          r="42"
+          stroke="#0f172a"
+          strokeWidth="10"
+          fill="none"
         />
-      </div>
+        <circle
+          cx="50"
+          cy="50"
+          r="42"
+          stroke="#38bdf8"
+          strokeWidth="10"
+          fill="none"
+          strokeDasharray={circumference}
+          strokeDashoffset={
+            circumference - (clamped / 100) * circumference
+          }
+          strokeLinecap="round"
+          style={{ transition: "stroke-dashoffset 0.4s ease" }}
+        />
+        <text
+          x="50"
+          y="48"
+          textAnchor="middle"
+          className="fill-slate-600 text-[18px] font-semibold"
+        >
+          {clamped}
+        </text>
+        <text
+          x="50"
+          y="64"
+          textAnchor="middle"
+          className="fill-slate-600 text-[10px]"
+        >
+          {label}
+        </text>
+      </svg>
     </div>
   );
 }
